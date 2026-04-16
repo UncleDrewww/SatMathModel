@@ -1,11 +1,11 @@
 function Att_Ctrl(FwSpd,T_sys,Qon)
 % %#codegen
 global AttRef_Ok Agl_Deter W_Deter FwCtrlFlag W_Target Att4CtrlRefFlag MagRef_Ok MagCtrlFlag Mag_sys;
-global T_ctrl Matrix_I FwTmax FwHmax FwMode FwMode_last Mag_max jw Mode SubMode   index;
-global Agl4Ctrl W4Ctrl AA_bTo T_PID T_Fw T_Fwz H_Fw MagCmd T_Mag CtrlParam Hw0 ImagingMode;
-global Band_1 Band_2 Band_3;
+global T_ctrl Matrix_I FwTmax FwHmax FwMode FwMode_last Mag_max jw Mode;
+global Agl4Ctrl W4Ctrl AA_bTo T_PID T_Fw T_Fwz H_Fw MagCmd T_Mag CtrlParam Hw0;
+global RapidManeuver;
 global w_Tgt theta_Tgt a_f_Tgt;
-persistent  H_Ilast;
+persistent  H_Ilast Path;
 if isempty(H_Ilast)
     H_Ilast = [0;0;0;0];
 end
@@ -18,31 +18,13 @@ end
 % 控制用姿态角计算
 if AttRef_Ok == 1
     Qnb = angle2quat(Agl_Deter(3),Agl_Deter(2),Agl_Deter(1),'ZYX')';
-    if index(2) == 4   % 工况4表示-Z对日，工况0表示-X对日，默认为0
-        V_T = [0;0;-1];
-    else
-        V_T = [0;-1;0];
-    end
-    VecSun = quat2dcm(Qnb')*V_T;
-    if norm(cross(VecSun,V_T)) >= 10^-6
-        Agl_Sun = cross(VecSun,V_T)/norm(cross(VecSun,V_T))*acos(VecSun'*V_T);
-    else
-        Agl_Sun = [0;0;0];
-    end
-    
     for i =1:3
         if Att4CtrlRefFlag(i) == 1    %四元数控制
             Agl4Ctrl(i) = 2*sign(Qnb(1))*Qnb(i+1);
             W4Ctrl(i) = W_Deter(i);
-        elseif Att4CtrlRefFlag(i) == 2   %对地矢量角控制
-            Agl4Ctrl(i) = Agl_Deter(i);
-            W4Ctrl(i) = W_Deter(i);
         elseif Att4CtrlRefFlag(i) == 3   %角速度控制
             Agl4Ctrl(i) = 0;
             W4Ctrl(i) = W_Deter(i)-W_Target(i);
-        elseif Att4CtrlRefFlag(i) == 4
-            Agl4Ctrl(i) = Agl_Sun(i);
-            W4Ctrl(i) = W_Deter(i)-W_Target(i);     %对日矢量角控制
         else
             Agl4Ctrl(i) = 0;
             W4Ctrl(i) = 0;
@@ -54,14 +36,7 @@ else
 end
 T_Mag = MagCtrlAlgorithm(MagRef_Ok,MagCtrlFlag,Agl4Ctrl,W4Ctrl,FwSpd/30*pi*jw);
 if Mode == 0
-    
-elseif (Mode == 8) && (SubMode == 1)
-    
-elseif (Mode == 1) && (SubMode == 3)
-    
-elseif (Mode == 8) && (SubMode == 2)
-    T_Fw = [0;0;0;0];                      % 力矩模式怎么办？
-    H_Fw = Matrix_I'/(Matrix_I*Matrix_I')*W_Target;
+
 else
     if sum(FwMode) >= 3
         AglRate_lim = 1/180*pi;
@@ -69,45 +44,63 @@ else
         AglRate_lim = 0.05/180*pi;
     end
     T_PID_last = T_PID;
-    if (FwCtrlFlag(1) == 11)&&(FwCtrlFlag(2) == 11) && (FwCtrlFlag(3) == 11)%偏流角算法
-        Axis = ImagingMode;
-        if T_sys<=Band_1(3)
-            theta_Tgt = Band_1(1);   %侧摆目标角度
-            Allow_PathPlan = 0;
-        elseif T_sys > Band_1(3) && T_sys < Band_2(2)
-            theta0 = Band_1(1);
-            t0 = Band_1(3);
-            a0 = 0.05;  %驱动加速度0.25
-            theta_Tgt = Band_2(1);   %侧摆目标角度
-            Allow_PathPlan = 1;
-        elseif T_sys >= Band_2(2) && T_sys <= Band_2(3)
-            theta_Tgt = Band_2(1);   %侧摆目标角度
-            Allow_PathPlan = 0;
-        elseif T_sys > Band_2(3) && T_sys < Band_3(2)
-            theta0 = Band_2(1);
-            t0 = Band_2(3);
-            a0 = -0.05;  %驱动加速度0.25
-            theta_Tgt = Band_3(1);   %侧摆目标角度
-            Allow_PathPlan = 1;
+    if (FwCtrlFlag(1) == 11)&&(FwCtrlFlag(2) == 11) && (FwCtrlFlag(3) == 11)%快速机动算法
+        a0max_w = 0.03;
+        wmax_w = 0.5;
+        if isempty(Path)
+            T0 = T_sys;
+            qob = Qnb;
+            qt = [cosd(5),sind(5)/sqrt(3)*[1,1,1]]';
+            Path = generatePath(T0,qob',qt,a0max_w,wmax_w);
+        end
+        Ts = T_sys;
+        T0 = Path.T0;
+        tr = Path.tr;
+        ts = Path.ts;
+        q0 = Path.q0;
+        e = Path.e;
+
+        if Ts < T0+tr
+            k = (Ts-T0-0.5*tr)/tr*pi;
+            wt = a0max_w * tr * (0.5*sin(k)+0.5);
+            thetat = a0max_w*tr*0.5*(Ts-T0-cos(k)*tr/pi);
+        elseif Ts < T0+tr+ts
+            wt = a0max_w*tr;
+            thetat = a0max_w*tr^2/2+a0max_w*tr*(Ts-T0-tr);
+        elseif Ts < T0+2*tr+ts
+            k = (T0 + 2*tr + ts - Ts -0.5*tr)/tr*pi;
+            wt = a0max_w*tr * (0.5*sin(k)+0.5);
+            thetat = a0max_w*tr*0.5*(Ts-T0+ts+cos(k)*tr/pi);
         else
-            theta_Tgt = Band_3(1);   %侧摆目标角度
-            Allow_PathPlan = 0;
+            wt = 0;
+            thetat = a0max_w*tr*(tr+ts);   
         end
-        if Allow_PathPlan == 1
-            if abs(theta_Tgt-theta0) > 16
-                vmax = sign(theta_Tgt-theta0) * 0.4;
-                tr = abs(vmax/a0);    %计算路径规划加、减速时间
-                ts = abs((theta_Tgt-theta0-a0*tr^2)/vmax);  %计算路径规划匀速时间
-            else
-                tr = sqrt(abs((theta_Tgt-theta0)/a0));
-                ts = 0;
-            end
-            [T,Agl,W,w_Tgt,theta,a_f_Tgt] = PathPlan(t0,tr,ts,a0,T_sys,theta0,Qon,Agl_Deter,W_Deter,T_PID_last,AglRate_lim);
-            T_PID(Axis) = T(Axis);
-            Agl4Ctrl(Axis) = Agl(Axis);
-            W4Ctrl(Axis) = W(Axis);
+        if Ts < T0+tr
+            k = (Ts-T0-0.5*tr)/tr*pi;
+            at = a0max_w * pi *0.5*cos(k);
+        elseif Ts < T0+tr+ts
+            at = 0;
+        elseif Ts < T0+2*tr+ts
+            k = (T0 + 2*tr + ts - Ts -0.5*tr)/tr*pi;
+            at = -a0max_w*pi*0.5*cos(k);
+        else
+            at = 0;
         end
-        T_PID1 = T_PID +0*cross((W_Deter+[0;-0.0011;0]),[MainI(1) XieI(1) XieI(2);XieI(1) MainI(2) XieI(3);XieI(2) XieI(3) MainI(3)]*(W_Deter+[0;-0.0011;0])+Matrix_I*H_Fw);
+
+        theta = thetat*pi/360;
+        QobT = quatmultiply(q0,[cos(theta),sin(theta)*e;]);
+        WbTo_bT = wt*e'/norm(e)/180*pi;
+        AbTo_bT = at*e'/norm(e)/180*pi;
+        Qnb = angle2quat(Agl_Deter(3),Agl_Deter(2),Agl_Deter(1),'ZYX')';
+        QbTb = quatmultiply(quatinv(QobT),quatmultiply(Qon',Qnb'))';
+        Agl4Ctrl = 2*sign(QbTb(1))*QbTb(2:4);
+        W4Ctrl = W_Deter - quat2dcm(QbTb')*WbTo_bT;
+        PDParam = 1;
+        T_PID(1) = FwCtrlAlgorithm(3,Agl4Ctrl,W4Ctrl,T_PID_last(1),AglRate_lim,1,PDParam);
+        T_PID(2) = FwCtrlAlgorithm(3,Agl4Ctrl,W4Ctrl,T_PID_last(2),AglRate_lim,2,PDParam);
+        T_PID(3) = FwCtrlAlgorithm(3,Agl4Ctrl,W4Ctrl,T_PID_last(3),AglRate_lim,3,PDParam);
+        [~, MainI, ~, ~] = CtrlParamCal;
+        T_PID1 = T_PID - MainI.*quat2dcm(QbTb')*AbTo_bT;
     else
         PDParam = 1;
         T_PID(1) = FwCtrlAlgorithm(FwCtrlFlag(1),Agl4Ctrl,W4Ctrl,T_PID_last(1),AglRate_lim,1,PDParam);
@@ -309,83 +302,6 @@ else
 end
 
 
-%% 路径规划
-function [T,Agl4Ctrl,W4Ctrl,w,theta,a_f] = PathPlan(t0,tr,ts,a0,T_sys,theta0,Qon,Agl_Deter,W_Deter,T_last,AglRate_lim)
-wmax = a0*tr;
-if(T_sys>=t0)&& (T_sys<(t0+tr))
-    a_f = a0;
-    w = a_f*(T_sys-t0);
-%     w=a0*tr*(0.5*sin((t-t0-0.5*tr)/tr*pi)+0.5);
-    theta = theta0+1/2*w*(T_sys-t0);
-   
-elseif (T_sys>=(t0+tr))&&(T_sys<(t0+tr+ts))
-    w = wmax;
-%     w=a0*tr;
-    theta = theta0+1/2*wmax*tr+w*(T_sys-(t0+tr));
-    a_f = 0;
-elseif(T_sys>=(t0+tr+ts))&&(T_sys<(t0+tr+ts+tr))
-    w = wmax-a0*(T_sys-(t0+tr+ts));
-    theta = theta0+1/2*wmax*tr+wmax*ts+1/2*(w+wmax)*(T_sys-(t0+tr+ts));
-    a_f = -a0;
-elseif (T_sys<t0)
-    w = 0;
-    theta = theta0;
-    a_f = 0;
-else
-    w = 0;
-    theta = theta0+a0*tr^2+ts*wmax;
-    a_f = 0;
-end
-QobT = angle2quat(theta/180*pi,0,0,'XYZ')';
-Qnb = angle2quat(Agl_Deter(3),Agl_Deter(2),Agl_Deter(1),'ZYX')';
-QbTb = quatmultiply(quatinv(QobT'),quatmultiply(Qon',Qnb'))';
-Agl4Ctrl = 2*sign(QbTb(1))*QbTb(2:4);
-W4Ctrl = W_Deter - quat2dcm(QbTb')*[w/180*pi;0;0];
-T_PID=[0;0;0];
-PDParam = 1;
-T_PID(1) = FwCtrlAlgorithm(3,Agl4Ctrl,W4Ctrl,T_last(1),AglRate_lim,1,PDParam);
-T_PID(2) = FwCtrlAlgorithm(3,Agl4Ctrl,W4Ctrl,T_last(2),AglRate_lim,2,PDParam);
-T_PID(3) = FwCtrlAlgorithm(3,Agl4Ctrl,W4Ctrl,T_last(3),AglRate_lim,3,PDParam);
-[~, MainI, ~, ~] = CtrlParamCal;
-T = T_PID - MainI.*[a_f/180*pi;0;0];
-
-function [T,Agl4Ctrl,W4Ctrl,w,theta,a_f] = PathPlan1(t0,tr,ts,a0,T_sys,theta0,Qon,Agl_Deter,W_Deter,T_last,AglRate_lim)
-if(T_sys>=t0)&& (T_sys<(t0+tr))
-    a_f = a0*pi*(0.5*cos((T_sys-t0-0.5*tr)/tr*pi));
-    w=a0*tr*(0.5*sin((T_sys-t0-0.5*tr)/tr*pi)+0.5);
-    theta = theta0-tr^2*a0/2/pi*cos((T_sys-t0-0.5*tr)/tr*pi)+a0*tr/2*(T_sys-t0);
-   
-elseif (T_sys>=(t0+tr))&&(T_sys<(t0+tr+ts))
-    w=a0*tr;
-    theta = theta0+a0*tr^2/2+a0*tr*(T_sys-t0-tr);
-    a_f = 0;
-elseif(T_sys>=(t0+tr+ts))&&(T_sys<(t0+tr+ts+tr))
-    w = a0*tr*(0.5*sin((t0+2*tr+ts-T_sys-0.5*tr)/tr*pi)+0.5);
-    a_f = -a0*pi*0.5*cos((t0+2*tr+ts-T_sys-0.5*tr)/tr*pi);
-    theta = theta0+tr^2*a0/2/pi*cos((t0+2*tr+ts-T_sys-0.5*tr)/tr*pi)+a0*tr/2*(T_sys-t0+ts);
-elseif (T_sys<t0)
-    w = 0;
-    theta = theta0;
-    a_f = 0;
-else
-    w = 0;
-    theta = theta0+a0*tr^2+ts*a0*tr;
-    a_f = 0;
-end
-QobT = angle2quat(theta/180*pi,0,0,'XYZ')';
-Qnb = angle2quat(Agl_Deter(3),Agl_Deter(2),Agl_Deter(1),'ZYX')';
-QbTb = quatmultiply(quatinv(QobT'),quatmultiply(Qon',Qnb'))';
-Agl4Ctrl = 2*sign(QbTb(1))*QbTb(2:4);
-W4Ctrl = W_Deter - quat2dcm(QbTb')*[w/180*pi;0;0];
-T_PID=[0;0;0];
-PDParam = 1;
-T_PID(1) = FwCtrlAlgorithm(3,Agl4Ctrl,W4Ctrl,T_last(1),AglRate_lim,1,PDParam);
-T_PID(2) = FwCtrlAlgorithm(3,Agl4Ctrl,W4Ctrl,T_last(2),AglRate_lim,2,PDParam);
-T_PID(3) = FwCtrlAlgorithm(3,Agl4Ctrl,W4Ctrl,T_last(3),AglRate_lim,3,PDParam);
-[~, MainI, ~, ~] = CtrlParamCal;
-T = T_PID - MainI.*[a_f/180*pi;0;0];
-
-
 function [I, MainI, XieI, CtrlParam] = CtrlParamCal
 Ibxx=101;Ibyy=109;Ibzz=108;
 Ibxy=-3.03;Ibxz= 11.24;Ibyz=15.02;
@@ -461,3 +377,25 @@ else
     X3 =max(X2,abs(X(4)));
     Z = X/X3*Y;
 end
+
+function Path = generatePath(T0,qob,qt,a0max_w,wmax_w)
+dq = quatmultiply(quatinv(qob),qt');
+theta = 2*acosd(dq(1));
+if theta<1e-6
+    theta = 0;
+    e = [1,0,0];
+else
+    e = dq(2:4)/sind(theta/2);
+end
+if abs(theta) > wmax_w^2/a0max_w
+    tr = abs(wmax_w/a0max_w);
+    ts = abs(theta - a0max_w*tr^2)/wmax_w;
+else
+    tr = sqrt(abs(theta)/a0max_w);
+    ts = 0;
+end
+Path.T0 = T0;
+Path.tr = tr;
+Path.ts = ts;
+Path.q0 = qob;
+Path.e = e;

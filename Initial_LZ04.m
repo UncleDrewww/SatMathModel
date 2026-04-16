@@ -23,7 +23,7 @@ H=a-Re;  % 高度
 F107 = 150;% F10.7系数 65/75/100/125/150/175/200/225/250/275
 % disp(2*pi/w0);
 %% 初始姿态
-Att0=1*[80 0 0]'*pi/180;% 磁阻尼
+Att0=0*[80 0 0]'*pi/180;% 磁阻尼
 W_bi0=1*[0;-w0;0]+0*[2;-2;2]*pi/180;
 MtInfluence = 0;
 OpenLoop_Att = 0;% 1开环  0闭环
@@ -51,10 +51,8 @@ Kg_Noise_Mm=Noise_On;Kg_Noise_St=Noise_On;Kg_FixErr_St=0+0*Noise_On;Kg_Noise_Orb
 Kg_Drift_Gyro=Noise_On*0;Kg_Noise_Gyro=Noise_On*1;Kg_Noise_Ass=Noise_On;
 global Gyro_Ok_Set StOk_Set Qnb_St Alpha_Tgt;  % --LC  testw
 Gyro_Ok_Set=[1;1];StOk_Set=1;Qnb_St=[1;0;0;0];Alpha_Tgt=0;
-global ImagingMode;   % 相机成像模式
-ImagingMode = 1;
-global Band_1 Band_2 Band_3;
-Band_1 = [0;0;0];Band_2=[0;0;0];Band_3=[0;0;0];
+global RapidManeuver;
+RapidManeuver = [0;0;0];
 %%
 % 计算惯性系下的初始位置和速度
 p=a*(1-e^2);
@@ -78,11 +76,11 @@ Ib0_0 = [Ibxx Ibxy Ibxz;Ibxy Ibyy Ibyz;Ibxz Ibyz Ibzz];% 帆板展开前转动惯量
 
 global FwTmax FwHmax jw;
 jw=0.0064;         % 反作用飞轮转动惯量
-FwTmax0 = 0.05;    % 反作用飞轮最大力矩0.1Nm
+FwTmax0 = 0.1;    % 反作用飞轮最大力矩0.1Nm
 FwTmax = FwTmax0;
 FwHmax = 4;
 MaxRWn= FwHmax/jw;%飞轮最大转速，rad/s
-Fw_Mode = 2;   %1--转矩模式，2--转速模式
+Fw_Mode = 1;   %1--转矩模式，2--转速模式
 Fw_tao = 0.3;  %飞轮响应时间
 
 % 磁卸载系数
